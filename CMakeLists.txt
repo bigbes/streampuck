@@ -27,8 +27,8 @@ include_directories("${PROJECT_SOURCE_DIR}/msgpuck")
 message(STATUS "CMAKE_BUILD_TYPE: ${CMAKE_BUILD_TYPE}")
 
 set(sp_lib_sources
-        streampuck.c
-        mp_additions.c
+        sp.c
+        mp_custom.c
 )
 
 add_library(sp STATIC ${sp_lib_sources})
@@ -37,7 +37,7 @@ set_target_properties(sp PROPERTIES VERSION ${SPLIB_VERSION} SOVERSION ${SPLIB_S
 
 
 add_executable(sp_test
-    streampuck_test.c
+    sp_test.c
 )
 target_link_libraries(sp_test sp)
 add_dependencies(sp_test sp)
