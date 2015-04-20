@@ -1,7 +1,7 @@
 #define MP_SOURCE 1
-#include "msgpuck/msgpuck.h"
-#include "streampuck.h"
-#include "mp_additions.h"
+#include <msgpuck.h>
+#include "sp.h"
+#include "mp_custom.h"
 
 #include <stdio.h>
 
@@ -31,9 +31,21 @@ sp_istate_pop(struct sp_istate_t *ist) {
 }
 
 int
+sp_istate_growstack(struct sp_istate_t *ist) {
+	struct sp_istate_stack_t *s = SP_REALLOC(ist->state, ist->max_depth + SP_DEPTH_STEP);
+	if (!s) return -1;
+	ist->state = s;
+	ist->max_depth += SP_DEPTH_STEP;
+	return 0;
+}
+
+int
 sp_istate_push(struct sp_istate_t *ist, enum mp_type type, uint32_t size) {
 	assert(ist); assert(type == MP_MAP || type == MP_ARRAY); assert(size > 0);
-	if (ist->depth == SP_MAX_DEPTH - 1) return -1;
+	if (ist->depth == SP_DEPTH_MAX - 1) return -1;
+	if (ist->depth == ist->max_depth - 1)
+		if (sp_istate_growstack(ist))
+			return -2;
 	ist->state[ist->depth++] = (struct sp_istate_stack_t){size,type};
 	return 0;
 }
@@ -41,7 +53,11 @@ sp_istate_push(struct sp_istate_t *ist, enum mp_type type, uint32_t size) {
 void sp_free(struct sp_handle_t *h) {
 	if (h) {
 		if (h->cb) SP_FREE((void *)h->cb);
-		if (h->istate) SP_FREE((void *)h->istate);
+		if (h->istate) {
+			if (h->istate->state)
+				SP_FREE((void *)h->istate->state);
+			SP_FREE((void *)h->istate);
+		}
 		SP_FREE((void *)h);
 	}
 }
@@ -55,6 +71,9 @@ sp_alloc() {
 	if (!h->cb) goto cleanup;
 	h->istate = SP_MALLOC(sizeof(struct sp_istate_t));
 	if (!h->istate) goto cleanup;
+	h->istate->state = SP_MALLOC(sizeof(struct sp_istate_stack_t) * SP_DEPTH_STEP);
+	h->istate->max_depth = SP_DEPTH_STEP;
+	if (!h->istate->state) goto cleanup;
 	return h;
 cleanup:
 	sp_free(h);
@@ -89,7 +108,7 @@ void sp_refeed(struct sp_handle_t *h, char *buffer, size_t size) {
 			TO->sp_##TYPE = sp_default_cb_##TYPE;	\
 	} while (0)
 
-void
+int
 sp_options_unset(struct sp_handle_t *h, enum sp_options opt) {
 	assert(h);
 	switch (opt) {
@@ -102,7 +121,8 @@ sp_options_unset(struct sp_handle_t *h, enum sp_options opt) {
 	case (sp_allow_multiple):
 		h->opt &= ~(sp_allow_multiple);
 		break;
-	case (sp_set_mem_ctx):
+	case (sp_set_mem):
+		sp_mem_init((sp_allocator_t *)realloc);
 		break;
 	case (sp_set_cb):
 		if (h->cb) SP_FREE((void *)h->cb);
@@ -111,11 +131,15 @@ sp_options_unset(struct sp_handle_t *h, enum sp_options opt) {
 	case (sp_set_cb_ctx):
 		h->cb_ctx = NULL;
 		break;
+	default:
+		return -1;
 	}
+	return 0;
 }
 
 int
 sp_options_set(struct sp_handle_t *h, enum sp_options opt, void *val) {
+	assert(h);
 	switch (opt) {
 	case (sp_validate_before):
 		h->opt |= opt;
@@ -128,8 +152,9 @@ sp_options_set(struct sp_handle_t *h, enum sp_options opt, void *val) {
 		if (h->opt & sp_allow_garbage) return -1;
 		h->opt |= opt;
 		break;
-	case (sp_set_mem_ctx):
+	case (sp_set_mem):
 		if (!val) return -1;
+		sp_mem_init((sp_allocator_t *)val);
 		break;
 	case (sp_set_cb):
 		if (!h->cb) h->cb = SP_MALLOC(sizeof(struct sp_callbacks_t));
@@ -158,8 +183,13 @@ sp_options_set(struct sp_handle_t *h, enum sp_options opt, void *val) {
 		if (!val) return -1;
 		h->cb_ctx = val;
 		break;
+	default:
+		return -1;
 	}
+	return 0;
 }
+
+#undef CB_APPLY
 
 enum sp_status
 sp_process(struct sp_handle_t *h) {
@@ -171,21 +201,21 @@ sp_process(struct sp_handle_t *h) {
 			if (status) goto cancel;
 		}
 		if (mp_unlikely(h->buf_pos >= h->buf_end)) {
-			h->state = sp_state_needmore;
+			h->state = sp_state_error_need_more;
 			return sp_status_error;
 		}
 		if ((h->opt & sp_validate_before) && ((h->state == sp_state_start) ||
-					(h->state == sp_state_needmore))) {
+					(h->state == sp_state_error_need_more))) {
 			const char *datachk = data;
 			if (mp_check(&datachk, h->buf_end)) {
-				h->state = sp_state_needmore;
+				h->state = sp_state_error_need_more;
 				return sp_status_error;
 			}
 		}
 		enum mp_type type = mp_typeof(*data);
 		if (!(h->opt & sp_validate_before) &&
 				mp_unlikely(mp_singlecheck(data, h->buf_end))) {
-			h->state = sp_state_needmore;
+			h->state = sp_state_error_need_more;
 			return sp_status_error;
 		}
 		if (sp_istate_curtype(h->istate) == MP_ARRAY) {
@@ -202,6 +232,7 @@ sp_process(struct sp_handle_t *h) {
 		uint8_t ext_type = 0;
 		uint32_t val_len = 0;
 		const char *val = NULL;
+		int push_state = 0;
 		switch (type) {
 		case MP_NIL:
 			status = h->cb->sp_nil(h->cb_ctx);
@@ -226,13 +257,27 @@ sp_process(struct sp_handle_t *h) {
 			val_len = mp_decode_array(&data);
 			status = h->cb->sp_array_begin(h->cb_ctx, val_len);
 			if (status) goto cancel;
-			sp_istate_push(h->istate, MP_ARRAY, val_len);
+			push_state = sp_istate_push(h->istate, MP_ARRAY, val_len);
+			if (push_state == -1) {
+				h->state = sp_state_error_depth_exceeded;
+				return sp_status_error;
+			} else if (push_state == -2) {
+				h->state = sp_state_error_not_enough_mem;
+				return sp_status_error;
+			}
 			break;
 		case MP_MAP:
 			val_len = mp_decode_map(&data);
 			status = h->cb->sp_map_begin(h->cb_ctx, val_len);
 			if (status) goto cancel;
-			sp_istate_push(h->istate, MP_MAP, val_len * 2);
+			push_state = sp_istate_push(h->istate, MP_MAP, val_len * 2);
+			if (push_state == -1) {
+				h->state = sp_state_error_depth_exceeded;
+				return sp_status_error;
+			} else if (push_state == -2) {
+				h->state = sp_state_error_not_enough_mem;
+				return sp_status_error;
+			}
 			break;
 		case MP_BOOL:
 			status = h->cb->sp_bool(h->cb_ctx, mp_decode_bool(&data));
@@ -261,7 +306,7 @@ sp_process(struct sp_handle_t *h) {
 					h->state = sp_state_start;
 					continue;
 				} else {
-					h->state = sp_state_garbage;
+					h->state = sp_state_error_garbage;
 					return sp_status_error;
 				}
 			} else {
@@ -280,124 +325,125 @@ cancel:
 
 int
 sp_default_cb_nil (void *ctx) {
-	(void *)ctx;
+	SP_UNUSED(ctx);
 	return 0;
 }
 
 int
 sp_default_cb_uint (void *ctx, uint64_t val) {
-	(void *)ctx;
-	(uint64_t )val;
+	SP_UNUSED(ctx);
+	SP_UNUSED(val);
 	return 0;
 }
 
 int
 sp_default_cb_int (void *ctx, int64_t val) {
-	(void *)ctx;
-	(int64_t )val;
+	SP_UNUSED(ctx);
+	SP_UNUSED(val);
 	return 0;
 }
 
 int
 sp_default_cb_str (void *ctx, const char *val, uint32_t val_len) {
-	(void *)ctx;
-	(const char *)val;
-	(uint32_t )val_len;
+	SP_UNUSED(ctx);
+	SP_UNUSED(val);
+	SP_UNUSED(val_len);
 	return 0;
 }
 
 int
 sp_default_cb_bin (void *ctx, const char *val, uint32_t val_len) {
-	(void *)ctx;
-	(const char *)val;
-	(uint32_t )val_len;
+	SP_UNUSED(ctx);
+	SP_UNUSED(val);
+	SP_UNUSED(val_len);
 	return 0;
 }
 
 int
 sp_default_cb_array_begin (void *ctx, uint32_t len) {
-	(void *)ctx;
-	(uint32_t )len;
+	SP_UNUSED(ctx);
+	SP_UNUSED(len);
 	return 0;
 }
 
 int
 sp_default_cb_array_value (void *ctx, enum mp_type type) {
-	(void *)ctx;
-	(enum mp_type )type;
+	SP_UNUSED(ctx);
+	SP_UNUSED(type);
 	return 0;
 }
 
 int
 sp_default_cb_array_end (void *ctx) {
-	(void *)ctx;
+	SP_UNUSED(ctx);
 	return 0;
 }
 
 int
 sp_default_cb_map_begin (void *ctx, uint32_t len) {
-	(void *)ctx;
+	SP_UNUSED(ctx);
+	SP_UNUSED(len);
 	return 0;
 }
 
 int
 sp_default_cb_map_key (void *ctx, enum mp_type type) {
-	(void *)ctx;
-	(enum mp_type )type;
+	SP_UNUSED(ctx);
+	SP_UNUSED(type);
 	return 0;
 }
 
 int
 sp_default_cb_map_value (void *ctx, enum mp_type type) {
-	(void *)ctx;
-	(enum mp_type )type;
+	SP_UNUSED(ctx);
+	SP_UNUSED(type);
 	return 0;
 }
 
 int
 sp_default_cb_map_end (void *ctx) {
-	(void *)ctx;
+	SP_UNUSED(ctx);
 	return 0;
 }
 
 int
 sp_default_cb_bool (void *ctx, char val) {
-	(void *)ctx;
-	(char )val;
+	SP_UNUSED(ctx);
+	SP_UNUSED(val);
 	return 0;
 }
 
 int
 sp_default_cb_float (void *ctx, float val) {
-	(void *)ctx;
-	(float )val;
+	SP_UNUSED(ctx);
+	SP_UNUSED(val);
 	return 0;
 }
 
 int
 sp_default_cb_double (void *ctx, double val) {
-	(void *)ctx;
-	(double )val;
+	SP_UNUSED(ctx);
+	SP_UNUSED(val);
 	return 0;
 }
 
 int
 sp_default_cb_ext (void *ctx, uint8_t type, const char *val, uint32_t val_len) {
-	(void *)ctx;
-	(uint8_t )type;
-	(const char *)val;
-	(uint32_t )val_len;
+	SP_UNUSED(ctx);
+	SP_UNUSED(type);
+	SP_UNUSED(val);
+	SP_UNUSED(val_len);
 	return 0;
 }
 
 int
 sp_default_cb_query_begin (void *ctx) {
-	(void *)ctx;
+	SP_UNUSED(ctx);
 	return 0;
 }
 
 int
 sp_default_cb_query_end (void *ctx) {
-	(void *)ctx;
+	SP_UNUSED(ctx);
 	return 0;
 }

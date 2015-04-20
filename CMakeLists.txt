@@ -28,6 +28,7 @@ message(STATUS "CMAKE_BUILD_TYPE: ${CMAKE_BUILD_TYPE}")
 
 set(sp_lib_sources
         sp.c
+        sp_mem.c
         mp_custom.c
 )
 

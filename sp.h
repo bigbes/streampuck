@@ -16,11 +16,10 @@
 		errno, clean_errno(), ##__VA_ARGS__)
 #define SP_LOG_INFO(fmt, ...) SP_LOG("INFO", "", fmt, ##__VA_ARGS__)
 
-#if !defined(SP_MALLOC) || !defined(SP_FREE) || !defined(SP_REALLOC)
-#  define SP_MALLOC(size)       realloc(NULL, size)
-#  define SP_FREE(ptr)          realloc(ptr, 0)
-#  define SP_REALLOC(ptr, size) realloc(ptr, size)
-#endif
+#define SP_UNUSED(arg) (void )(arg)
+
+#include "sp_mem.h"
+#include "mp_custom.h"
 
 struct sp_callbacks_t {
 	int (*sp_nil)         (void *ctx);
@@ -55,13 +54,14 @@ struct sp_callbacks_t {
 };
 
 enum sp_state {
-	sp_state_start    = 0x00,
-	sp_state_process  = 0x01,
-	sp_state_error    = 0x02,
-	sp_state_end      = 0x04,
-	sp_state_garbage  = 0x08,
-	sp_state_needmore = 0x10,
-	sp_state_cancel   = 0x20,
+	sp_state_start,
+	sp_state_process,
+	sp_state_end,
+	sp_state_cancel,
+	sp_state_error_garbage,
+	sp_state_error_need_more,
+	sp_state_error_depth_exceeded,
+	sp_state_error_not_enough_mem,
 };
 
 enum sp_status {
@@ -76,7 +76,7 @@ enum sp_options {
 	sp_allow_multiple  = 0x04,
 	sp_set_cb          = 0x08,
 	sp_set_cb_ctx      = 0x10,
-	sp_set_mem_ctx     = 0x20,
+	sp_set_mem         = 0x20,
 };
 
 struct sp_istate_stack_t {
@@ -88,11 +88,13 @@ struct sp_istate_stack_t {
 	enum mp_type type;
 };
 
-#define SP_MAX_DEPTH 128
+#define SP_DEPTH_MAX 128
+#define SP_DEPTH_STEP 16
 
 struct sp_istate_t {
-	struct sp_istate_stack_t state[SP_MAX_DEPTH];
+	struct sp_istate_stack_t *state;
 	uint16_t depth;
+	uint16_t max_depth;
 };
 
 struct sp_handle_t {
@@ -113,7 +115,7 @@ void   sp_feed(struct sp_handle_t *h, char *buffer, size_t enlarge);
 void   sp_reset(struct sp_handle_t *h);
 void   sp_refeed(struct sp_handle_t *h, char *buffer, size_t size);
 int    sp_options_set(struct sp_handle_t *h, enum sp_options opt, void *val);
-void   sp_options_unset(struct sp_handle_t *h, enum sp_options opt);
+int    sp_options_unset(struct sp_handle_t *h, enum sp_options opt);
 enum sp_status sp_process(struct sp_handle_t *h);
 
 

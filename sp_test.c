@@ -5,15 +5,15 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <stddef.h>
-#include "streampuck.h"
+#include "sp.h"
 
-int sp_cb_printf_int(void *ctx, int64_t val){
-	(void *)ctx;
-	printf("int val: %zd\n", val);
+int sp_cb_printf_uint(void *ctx, uint64_t val){
+	SP_UNUSED(ctx);
+	printf("uint val: %zd\n", val);
 	return 0;
 }
 int sp_cb_printf_str(void *ctx, const char *str, uint32_t str_len){
-	(void *)ctx;
+	SP_UNUSED(ctx);
 	printf("str val: %.*s\n", str_len, str);
 	return 0;
 }
@@ -26,8 +26,8 @@ int main() {
 	sp_options_set(hdl, sp_validate_before, NULL);
 	struct sp_callbacks_t cb = {
 		NULL, /* nil */
-		sp_cb_printf_int, /* uint */
-		sp_cb_printf_int, /* int*/
+		sp_cb_printf_uint, /* uint */
+		NULL, /* int*/
 		sp_cb_printf_str, /* str */
 		NULL, /* bin */
 		NULL, /* array_begin */
