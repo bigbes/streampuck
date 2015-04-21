@@ -36,9 +36,4 @@ add_library(sp STATIC ${sp_lib_sources})
 set_target_properties(sp PROPERTIES COMPILE_FLAGS "${CMAKE_C_FLAGS}")
 set_target_properties(sp PROPERTIES VERSION ${SPLIB_VERSION} SOVERSION ${SPLIB_SOVERSION})
 
-
-add_executable(sp_test
-    sp_test.c
-)
-target_link_libraries(sp_test sp)
-add_dependencies(sp_test sp)
+add_subdirectory("test")

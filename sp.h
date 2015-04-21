@@ -54,7 +54,7 @@ struct sp_callbacks_t {
 };
 
 enum sp_state {
-	sp_state_start,
+	sp_state_start = 1,
 	sp_state_process,
 	sp_state_end,
 	sp_state_cancel,
@@ -103,7 +103,6 @@ struct sp_handle_t {
 	void *cb_ctx;
 	struct sp_istate_t *istate;
 	enum sp_options opt;
-	const char *error;
 	const char *buf;
 	const char *buf_pos;
 	const char *buf_end;
@@ -118,6 +117,14 @@ int    sp_options_set(struct sp_handle_t *h, enum sp_options opt, void *val);
 int    sp_options_unset(struct sp_handle_t *h, enum sp_options opt);
 enum sp_status sp_process(struct sp_handle_t *h);
 
+#define sp_opt_cgarbage(hdl)  ((hdl)->opt & sp_allow_garbage)
+#define sp_opt_cmultiple(hdl) ((hdl)->opt & sp_allow_multiple)
+#define sp_opt_cvalidate(hdl) ((hdl)->opt & sp_validate_before)
+
+#define sp_st_isstart(hdl)    ((hdl)->state & sp_state_start)
+#define sp_st_isneedmore(hdl) ((hdl)->state & sp_state_error_need_more)
+
+#define sp_is_end(hdl)	      ((hdl)->buf_end == (hdl)->buf_pos)
 
 int sp_default_cb_nil (void *ctx);
 int sp_default_cb_uint (void *ctx, uint64_t val);

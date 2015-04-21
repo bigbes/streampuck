@@ -3,7 +3,7 @@
 *.ko
 *.obj
 *.elf
-sp_test
+*.test
 
 # Precompiled Headers
 *.gch

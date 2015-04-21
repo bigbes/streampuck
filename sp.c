@@ -24,8 +24,7 @@ sp_istate_pop(struct sp_istate_t *ist) {
 	assert (ist);
 	if (ist->depth == 0) return -1;
 	if (ist->state[ist->depth - 1].left == 1) {
-		ist->depth--;
-		return 0;
+		return ist->depth--;
 	}
 	return --ist->state[ist->depth - 1].left;
 }
@@ -43,9 +42,10 @@ int
 sp_istate_push(struct sp_istate_t *ist, enum mp_type type, uint32_t size) {
 	assert(ist); assert(type == MP_MAP || type == MP_ARRAY); assert(size > 0);
 	if (ist->depth == SP_DEPTH_MAX - 1) return -1;
-	if (ist->depth == ist->max_depth - 1)
+	if (ist->depth == ist->max_depth - 1) {
 		if (sp_istate_growstack(ist))
 			return -2;
+	}
 	ist->state[ist->depth++] = (struct sp_istate_stack_t){size,type};
 	return 0;
 }
@@ -67,9 +67,17 @@ sp_alloc() {
 	struct sp_handle_t *h = SP_MALLOC(sizeof(struct sp_handle_t));
 	memset(h, 0, sizeof(struct sp_handle_t));
 	if (!h) goto cleanup;
+	h->state = sp_state_start;
 	h->cb = SP_MALLOC(sizeof(struct sp_callbacks_t));
 	if (!h->cb) goto cleanup;
 	h->istate = SP_MALLOC(sizeof(struct sp_istate_t));
+	struct sp_callbacks_t cb = {
+		NULL, NULL, NULL, NULL, NULL,
+		NULL, NULL, NULL, NULL, NULL,
+		NULL, NULL, NULL, NULL, NULL,
+		NULL, NULL, NULL
+	};
+	sp_options_set(h, sp_set_cb, &cb);
 	if (!h->istate) goto cleanup;
 	h->istate->state = SP_MALLOC(sizeof(struct sp_istate_stack_t) * SP_DEPTH_STEP);
 	h->istate->max_depth = SP_DEPTH_STEP;
@@ -90,6 +98,7 @@ void sp_reset(struct sp_handle_t *h) {
 	assert(h);
 	h->buf_pos = h->buf;
 	h->istate->depth = 0;
+	h->state = sp_state_start;
 }
 
 void sp_refeed(struct sp_handle_t *h, char *buffer, size_t size) {
@@ -110,6 +119,7 @@ void sp_refeed(struct sp_handle_t *h, char *buffer, size_t size) {
 
 int
 sp_options_unset(struct sp_handle_t *h, enum sp_options opt) {
+	struct sp_callbacks_t cb = {0};
 	assert(h);
 	switch (opt) {
 	case (sp_validate_before):
@@ -125,8 +135,13 @@ sp_options_unset(struct sp_handle_t *h, enum sp_options opt) {
 		sp_mem_init((sp_allocator_t *)realloc);
 		break;
 	case (sp_set_cb):
-		if (h->cb) SP_FREE((void *)h->cb);
-		h->cb = NULL;
+		cb = (struct sp_callbacks_t ){
+			NULL, NULL, NULL, NULL, NULL,
+			NULL, NULL, NULL, NULL, NULL,
+			NULL, NULL, NULL, NULL, NULL,
+			NULL, NULL, NULL
+		};
+		sp_options_set(h, sp_set_cb, &cb);
 		break;
 	case (sp_set_cb_ctx):
 		h->cb_ctx = NULL;
@@ -140,6 +155,7 @@ sp_options_unset(struct sp_handle_t *h, enum sp_options opt) {
 int
 sp_options_set(struct sp_handle_t *h, enum sp_options opt, void *val) {
 	assert(h);
+	struct sp_callbacks_t *cb = NULL;
 	switch (opt) {
 	case (sp_validate_before):
 		h->opt |= opt;
@@ -153,13 +169,10 @@ sp_options_set(struct sp_handle_t *h, enum sp_options opt, void *val) {
 		h->opt |= opt;
 		break;
 	case (sp_set_mem):
-		if (!val) return -1;
 		sp_mem_init((sp_allocator_t *)val);
 		break;
 	case (sp_set_cb):
-		if (!h->cb) h->cb = SP_MALLOC(sizeof(struct sp_callbacks_t));
-		if (!h->cb) return -1;
-		struct sp_callbacks_t *cb = (struct sp_callbacks_t *)val;
+		cb = (struct sp_callbacks_t *)val;
 		CB_APPLY(cb, h->cb, nil);
 		CB_APPLY(cb, h->cb, uint);
 		CB_APPLY(cb, h->cb, int);
@@ -196,28 +209,27 @@ sp_process(struct sp_handle_t *h) {
 	const char *data = h->buf_pos;
 	while (1) {
 		int status = 0;
-		if (h->state & sp_state_start) {
+		if (sp_st_isstart(h) && sp_opt_cmultiple(h)) {
 			status = h->cb->sp_query_begin(h->cb_ctx);
 			if (status) goto cancel;
 		}
+		/* Validate begin */
 		if (mp_unlikely(h->buf_pos >= h->buf_end)) {
-			h->state = sp_state_error_need_more;
-			return sp_status_error;
-		}
-		if ((h->opt & sp_validate_before) && ((h->state == sp_state_start) ||
-					(h->state == sp_state_error_need_more))) {
-			const char *datachk = data;
-			if (mp_check(&datachk, h->buf_end)) {
-				h->state = sp_state_error_need_more;
-				return sp_status_error;
-			}
+			goto needmore;
 		}
 		enum mp_type type = mp_typeof(*data);
-		if (!(h->opt & sp_validate_before) &&
-				mp_unlikely(mp_singlecheck(data, h->buf_end))) {
-			h->state = sp_state_error_need_more;
-			return sp_status_error;
+		if (sp_opt_cvalidate(h)) {
+			if (sp_st_isstart(h) || sp_st_isneedmore(h)) {
+				const char *datachk = data;
+				if (mp_unlikely(mp_check(&datachk, h->buf_end)))
+					goto needmore;
+			}
+		} else {
+			if (mp_unlikely(mp_singlecheck(data, h->buf_end)))
+				goto needmore;
 		}
+		/* Validate end */
+		h->state = sp_state_process;
 		if (sp_istate_curtype(h->istate) == MP_ARRAY) {
 			status = h->cb->sp_array_value(h->cb_ctx, type);
 			if (status) goto cancel;
@@ -228,13 +240,13 @@ sp_process(struct sp_handle_t *h) {
 				status = h->cb->sp_map_value(h->cb_ctx, type);
 			if (status) goto cancel;
 		}
-		h->state = sp_state_process;
 		uint8_t ext_type = 0;
 		uint32_t val_len = 0;
 		const char *val = NULL;
 		int push_state = 0;
 		switch (type) {
 		case MP_NIL:
+			data += 1;
 			status = h->cb->sp_nil(h->cb_ctx);
 			break;
 		case MP_UINT:
@@ -265,6 +277,8 @@ sp_process(struct sp_handle_t *h) {
 				h->state = sp_state_error_not_enough_mem;
 				return sp_status_error;
 			}
+			h->buf_pos = data;
+			continue;
 			break;
 		case MP_MAP:
 			val_len = mp_decode_map(&data);
@@ -278,6 +292,8 @@ sp_process(struct sp_handle_t *h) {
 				h->state = sp_state_error_not_enough_mem;
 				return sp_status_error;
 			}
+			h->buf_pos = data;
+			continue;
 			break;
 		case MP_BOOL:
 			status = h->cb->sp_bool(h->cb_ctx, mp_decode_bool(&data));
@@ -292,34 +308,53 @@ sp_process(struct sp_handle_t *h) {
 			ext_type = mp_decode_ext(&data, &val, &val_len);
 			status = h->cb->sp_ext(h->cb_ctx, ext_type, val, val_len);
 			break;
+		default:
+			mp_unreachable();
 		}
-		if (status) goto cancel;
 		h->buf_pos = data;
-		if (sp_istate_pop(h->istate) == -1) {
-			if (h->buf_end != h->buf_pos) {
-				if (h->opt & sp_allow_garbage) {
-					h->state = sp_state_end;
-					status = h->cb->sp_query_end(h->cb_ctx);
-					if (status) goto cancel;
-					return sp_status_ok;
-				} else if (h->opt & sp_allow_multiple) {
-					h->state = sp_state_start;
-					continue;
-				} else {
-					h->state = sp_state_error_garbage;
-					return sp_status_error;
-				}
-			} else {
-				h->state = sp_state_end;
-				status = h->cb->sp_query_end(h->cb_ctx);
-				if (status) goto cancel;
-				return sp_status_ok;
+		if (status) goto cancel;
+
+		while (sp_istate_curleft(h->istate) == 1) {
+			switch (sp_istate_curtype(h->istate)) {
+			case (MP_MAP):
+				status = h->cb->sp_map_end(h->cb_ctx);
+				break;
+			case (MP_ARRAY):
+				status = h->cb->sp_array_end(h->cb_ctx);
+				break;
+			default:
+				mp_unreachable();
 			}
+			if (status) goto cancel;
+			sp_istate_pop(h->istate);
+		}
+		if (sp_istate_pop(h->istate) != -1)
+			continue;
+		h->state = sp_state_end;
+		if (sp_opt_cmultiple(h)) {
+			status = h->cb->sp_query_end(h->cb_ctx);
+			if (status) goto cancel;
+		}
+		if (!sp_is_end(h)) {
+			if (sp_opt_cmultiple(h)) {
+				h->state = sp_state_start;
+				continue;
+			} else if (sp_opt_cgarbage(h)) {
+				return sp_status_ok;
+			} else {
+				h->state = sp_state_error_garbage;
+				return sp_status_error;
+			}
+		} else {
+			return sp_status_ok;
 		}
 	}
 cancel:
 	h->state = sp_state_cancel;
 	return sp_status_cancel;
+needmore:
+	h->state = sp_state_error_need_more;
+	return sp_status_error;
 }
 
 
