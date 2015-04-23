@@ -32,7 +32,7 @@ set(sp_lib_sources
         mp_custom.c
 )
 
-add_library(sp STATIC ${sp_lib_sources})
+add_library(sp SHARED ${sp_lib_sources})
 set_target_properties(sp PROPERTIES COMPILE_FLAGS "${CMAKE_C_FLAGS}")
 set_target_properties(sp PROPERTIES VERSION ${SPLIB_VERSION} SOVERSION ${SPLIB_SOVERSION})
 

@@ -31,7 +31,8 @@ sp_istate_pop(struct sp_istate_t *ist) {
 
 int
 sp_istate_growstack(struct sp_istate_t *ist) {
-	struct sp_istate_stack_t *s = SP_REALLOC(ist->state, ist->max_depth + SP_DEPTH_STEP);
+	struct sp_istate_stack_t *s = SP_REALLOC(ist->state, ist->max_depth +
+						 SP_DEPTH_STEP);
 	if (!s) return -1;
 	ist->state = s;
 	ist->max_depth += SP_DEPTH_STEP;
@@ -40,7 +41,7 @@ sp_istate_growstack(struct sp_istate_t *ist) {
 
 int
 sp_istate_push(struct sp_istate_t *ist, enum mp_type type, uint32_t size) {
-	assert(ist); assert(type == MP_MAP || type == MP_ARRAY); assert(size > 0);
+	assert(ist); assert(type == MP_MAP || type == MP_ARRAY);assert(size>0);
 	if (ist->depth == SP_DEPTH_MAX - 1) return -1;
 	if (ist->depth == ist->max_depth - 1) {
 		if (sp_istate_growstack(ist))
@@ -79,7 +80,8 @@ sp_alloc() {
 	};
 	sp_options_set(h, sp_set_cb, &cb);
 	if (!h->istate) goto cleanup;
-	h->istate->state = SP_MALLOC(sizeof(struct sp_istate_stack_t) * SP_DEPTH_STEP);
+	h->istate->state = SP_MALLOC(sizeof(struct sp_istate_stack_t) *
+				     SP_DEPTH_STEP);
 	h->istate->max_depth = SP_DEPTH_STEP;
 	if (!h->istate->state) goto cleanup;
 	return h;
@@ -221,7 +223,8 @@ sp_process(struct sp_handle_t *h) {
 		if (sp_opt_cvalidate(h)) {
 			if (sp_st_isstart(h) || sp_st_isneedmore(h)) {
 				const char *datachk = data;
-				if (mp_unlikely(mp_check(&datachk, h->buf_end)))
+				if (mp_unlikely(mp_check(&datachk,
+							 h->buf_end)))
 					goto needmore;
 			}
 		} else {
@@ -250,10 +253,12 @@ sp_process(struct sp_handle_t *h) {
 			status = h->cb->sp_nil(h->cb_ctx);
 			break;
 		case MP_UINT:
-			status = h->cb->sp_uint(h->cb_ctx, mp_decode_uint(&data));
+			status = h->cb->sp_uint(h->cb_ctx,
+						mp_decode_uint(&data));
 			break;
 		case MP_INT:
-			status = h->cb->sp_int(h->cb_ctx, mp_decode_int(&data));
+			status = h->cb->sp_int(h->cb_ctx,
+					       mp_decode_int(&data));
 			break;
 		case MP_STR:
 			val_len = 0;
@@ -269,7 +274,8 @@ sp_process(struct sp_handle_t *h) {
 			val_len = mp_decode_array(&data);
 			status = h->cb->sp_array_begin(h->cb_ctx, val_len);
 			if (status) goto cancel;
-			push_state = sp_istate_push(h->istate, MP_ARRAY, val_len);
+			push_state = sp_istate_push(h->istate, MP_ARRAY,
+						    val_len);
 			if (push_state == -1) {
 				h->state = sp_state_error_depth_exceeded;
 				return sp_status_error;
@@ -284,7 +290,8 @@ sp_process(struct sp_handle_t *h) {
 			val_len = mp_decode_map(&data);
 			status = h->cb->sp_map_begin(h->cb_ctx, val_len);
 			if (status) goto cancel;
-			push_state = sp_istate_push(h->istate, MP_MAP, val_len * 2);
+			push_state = sp_istate_push(h->istate, MP_MAP,
+						    val_len * 2);
 			if (push_state == -1) {
 				h->state = sp_state_error_depth_exceeded;
 				return sp_status_error;
@@ -296,17 +303,21 @@ sp_process(struct sp_handle_t *h) {
 			continue;
 			break;
 		case MP_BOOL:
-			status = h->cb->sp_bool(h->cb_ctx, mp_decode_bool(&data));
+			status = h->cb->sp_bool(h->cb_ctx,
+						mp_decode_bool(&data));
 			break;
 		case MP_FLOAT:
-			status = h->cb->sp_float(h->cb_ctx, mp_decode_float(&data));
+			status = h->cb->sp_float(h->cb_ctx,
+						 mp_decode_float(&data));
 			break;
 		case MP_DOUBLE:
-			status = h->cb->sp_double(h->cb_ctx, mp_decode_double(&data));
+			status = h->cb->sp_double(h->cb_ctx,
+						  mp_decode_double(&data));
 			break;
 		case MP_EXT:
 			ext_type = mp_decode_ext(&data, &val, &val_len);
-			status = h->cb->sp_ext(h->cb_ctx, ext_type, val, val_len);
+			status = h->cb->sp_ext(h->cb_ctx, ext_type, val,
+					       val_len);
 			break;
 		default:
 			mp_unreachable();
@@ -463,7 +474,8 @@ sp_default_cb_double (void *ctx, double val) {
 }
 
 int
-sp_default_cb_ext (void *ctx, uint8_t type, const char *val, uint32_t val_len) {
+sp_default_cb_ext (void *ctx, uint8_t type,
+		   const char *val, uint32_t val_len) {
 	SP_UNUSED(ctx);
 	SP_UNUSED(type);
 	SP_UNUSED(val);
